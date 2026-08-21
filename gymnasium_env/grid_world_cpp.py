@@ -4,31 +4,6 @@ import gymnasium as gym
 
 import pygame
 
-#
-# Coverage Path Planning (CPP) environment based on GridWorld with obstacles.
-#
-# The agent must visit as many free cells as possible while avoiding obstacles.
-# The reward function is designed to encourage exploration of new cells and
-# discourage revisiting already-visited cells.
-#
-# Reward function (inspired by deep RL approaches to patrolling/coverage problems):
-#   - +1.0 for visiting a new (unvisited) cell
-#   - -0.3 for revisiting an already-visited cell
-#   - -0.1 step penalty to encourage efficiency
-#   - +10.0 bonus for achieving full coverage (all free cells visited)
-#   - -5.0 penalty when max steps reached without full coverage
-#
-# The observation space includes:
-#   - Agent's (x, y) location (normalized)
-#   - Coverage ratio (proportion of free cells visited)
-#   - A 3x3 matrix of neighboring cells centered on the agent,
-#     where (1,1) is the agent's position and each cell is:
-#       0 = free (not yet visited), 1 = obstacle or wall (including out-of-bounds),
-#       2 = already visited position.
-#     Cells outside the grid boundaries are treated as walls (1).
-#
-# The episode ends when all free cells are visited or max steps is reached.
-#
 
 class GridWorldCPPEnv(gym.Env):
 
@@ -42,13 +17,11 @@ class GridWorldCPPEnv(gym.Env):
         self.count_steps = 0
         self.max_steps = max_steps
 
-        # Track visited cells
         self.visited = set()
 
         self._agent_location = np.array([-1, -1], dtype=int)
-        self._neighbors = np.zeros((3, 3), dtype=int)  # 3x3 matrix centered on agent
+        self._neighbors = np.zeros((3, 3), dtype=int)  
 
-        # Observation: Dict with agent info (x, y, coverage) and 3x3 neighbor matrix
         self.observation_space = gym.spaces.Dict({
             "agent": gym.spaces.Box(
                 low=np.array([0.0, 0.0, 0.0], dtype=np.float32),
@@ -62,13 +35,12 @@ class GridWorldCPPEnv(gym.Env):
             ),
         })
 
-        # 4 actions: right, up, left, down
         self.action_space = gym.spaces.Discrete(4)
         self._action_to_direction = {
-            0: np.array([1, 0]),   # right
-            1: np.array([0, -1]),  # up
-            2: np.array([-1, 0]),  # left
-            3: np.array([0, 1]),   # down
+            0: np.array([1, 0]),   
+            1: np.array([0, -1]),  
+            2: np.array([-1, 0]),  
+            3: np.array([0, 1]),   
         }
 
         assert render_mode is None or render_mode in self.metadata["render_modes"]

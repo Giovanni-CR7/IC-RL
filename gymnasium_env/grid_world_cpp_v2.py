@@ -1,36 +1,3 @@
-"""
-grid_world_cpp_v2.py  —  Coverage Path Planning (CPP) — Ambiente Definitivo
-============================================================================
-
-Combina o melhor dos dois scripts anteriores:
-  • BFS no reset  →  garante que 100% de cobertura é sempre alcançável
-  • Observação Dict  →  janela local NxN + stats globais (leve e informativo)
-  • Reward function completa  →  autossuficiente, sem wrappers externos
-  • Penalidade de parede/obstáculo  →  sem clip distorcido
-  • Compatível com stable-baselines3 / MultiInputPolicy sem modificações
-
-Espaço de observação
---------------------
-  "local"   : Box (local_view*local_view,) float32  — janela centrada no agente
-                  0.0 = célula livre não visitada
-                  0.5 = célula visitada
-                  1.0 = obstáculo ou fora do grid
-  "global"  : Box (4,) float32
-                  [0] x normalizado do agente
-                  [1] y normalizado do agente
-                  [2] taxa de cobertura atual
-                  [3] passos restantes normalizados
-
-Reward function
----------------
-  +1.0   célula nova visitada
-  -0.3   revisita de célula já visitada
-  -0.1   passo normal (incentiva eficiência)
-  -0.5   colisão com parede ou obstáculo (agente não se move)
-  +10.0  bônus por cobertura completa
-  -5.0   truncamento sem cobertura completa
-"""
-
 from __future__ import annotations
 
 import collections
@@ -46,13 +13,13 @@ class GridWorldCPPEnvV2(gym.Env):
 
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 8}
 
-    # local_view_size: tamanho da janela local quadrada (deve ser ímpar)
     def __init__(
         self,
         size: int = 10,
         obs_quantity: int = 12,
         max_steps: int = 500,
         local_view_size: int = 5,
+        include_goal_direction: bool = True,
         render_mode: Optional[str] = None,
     ):
         super().__init__()
@@ -63,6 +30,7 @@ class GridWorldCPPEnvV2(gym.Env):
         self.obs_quantity = int(obs_quantity)
         self.max_steps = int(max_steps)
         self.local_view_size = int(local_view_size)
+        self.include_goal_direction = bool(include_goal_direction)
         self.render_mode = render_mode
         self.window_size = 512
 
@@ -81,19 +49,23 @@ class GridWorldCPPEnvV2(gym.Env):
             2: np.array([-1, 0]),   # esquerda
             3: np.array([0,  1]),   # baixo
         }
+        self._bfs_dirs = [(1, 0), (-1, 0), (0, 1), (0, -1)]
 
         lv = self.local_view_size
+        if self.include_goal_direction:
+            global_low = np.array([0.0, 0.0, 0.0, 0.0, -1.0, -1.0], dtype=np.float32)
+            global_high = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+        else:
+            global_low = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+            global_high = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+
         self.observation_space = spaces.Dict({
             "local": spaces.Box(
                 low=0.0, high=1.0,
                 shape=(lv * lv,),
                 dtype=np.float32,
             ),
-            "global": spaces.Box(
-                low=np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32),
-                high=np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32),
-                dtype=np.float32,
-            ),
+            "global": spaces.Box(low=global_low, high=global_high, dtype=np.float32),
         })
 
         self.window = None
@@ -106,15 +78,52 @@ class GridWorldCPPEnvV2(gym.Env):
         total = len(self._reachable)
         return len(self._visited) / total if total > 0 else 1.0
 
+    # ── direção-objetivo (BFS multi-fonte / wavefront) ─────────────────────────
+
+    def _compute_goal_direction(self) -> tuple[float, float]:
+        """
+        Calcula a direção (dx, dy) até a célula não visitada alcançável mais
+        próxima, considerando obstáculos.
+        """
+        frontier = self._reachable - self._visited
+        if not frontier:
+            return 0.0, 0.0
+
+        # BFS multi-fonte: todas as células de fronteira começam com dist=0
+        dist: dict[tuple[int, int], int] = {c: 0 for c in frontier}
+        queue = collections.deque(frontier)
+        while queue:
+            cx, cy = queue.popleft()
+            d = dist[(cx, cy)]
+            for dx, dy in self._bfs_dirs:
+                nb = (cx + dx, cy + dy)
+                if nb in self._reachable and nb not in dist:
+                    dist[nb] = d + 1
+                    queue.append(nb)
+
+        ax, ay = int(self._agent_location[0]), int(self._agent_location[1])
+        agent_pos = (ax, ay)
+        agent_dist = dist.get(agent_pos)
+        if agent_dist is None:
+            # não deveria ocorrer (agent_pos é sempre alcançável), mas evita
+            # crash em caso de estado inesperado
+            return 0.0, 0.0
+
+        best_dir = (0, 0)
+        best_d = agent_dist
+        for dx, dy in self._bfs_dirs:
+            nb = (ax + dx, ay + dy)
+            nd = dist.get(nb)
+            if nd is not None and nd < best_d:
+                best_d = nd
+                best_dir = (dx, dy)
+
+        return float(best_dir[0]), float(best_dir[1])
+
     # ── observação ────────────────────────────────────────────────────────────
 
     def _build_local_view(self) -> np.ndarray:
-        """
-        Janela centrada no agente de tamanho local_view_size × local_view_size.
-        Células fora do grid ou obstáculos → 1.0
-        Células visitadas → 0.5
-        Células livres não visitadas → 0.0
-        """
+        
         half = self.local_view_size // 2
         ax, ay = self._agent_location
         view = np.zeros((self.local_view_size, self.local_view_size), dtype=np.float32)
@@ -133,15 +142,22 @@ class GridWorldCPPEnvV2(gym.Env):
 
     def _get_obs(self) -> dict:
         ax, ay = self._agent_location
+        span = max(1, self.size - 1)
         steps_remaining = max(0, self.max_steps - self.count_steps) / self.max_steps
+
+        global_vals = [
+            ax / span,
+            ay / span,
+            self.coverage_ratio,
+            steps_remaining,
+        ]
+        if self.include_goal_direction:
+            dx, dy = self._compute_goal_direction()
+            global_vals += [dx, dy]
+
         return {
             "local": self._build_local_view(),
-            "global": np.array([
-                ax / (self.size - 1),
-                ay / (self.size - 1),
-                self.coverage_ratio,
-                steps_remaining,
-            ], dtype=np.float32),
+            "global": np.array(global_vals, dtype=np.float32),
         }
 
     def _get_info(self) -> dict:
@@ -179,10 +195,9 @@ class GridWorldCPPEnvV2(gym.Env):
         # BFS: calcula células alcançáveis a partir do agente
         queue = collections.deque([start])
         self._reachable = {start}
-        dirs = [(1, 0), (-1, 0), (0, 1), (0, -1)]
         while queue:
             cx, cy = queue.popleft()
-            for dx, dy in dirs:
+            for dx, dy in self._bfs_dirs:
                 nb = (cx + dx, cy + dy)
                 nx, ny = nb
                 if (0 <= nx < self.size and 0 <= ny < self.size
@@ -206,7 +221,6 @@ class GridWorldCPPEnvV2(gym.Env):
     def step(self, action: int):
         action = int(action)
         direction = self._action_to_direction[action]
-        old_location = self._agent_location.copy()
         new_location = self._agent_location + direction
         nx, ny = new_location
 
@@ -269,7 +283,7 @@ class GridWorldCPPEnvV2(gym.Env):
             pygame.init()
             pygame.display.init()
             self.window = pygame.display.set_mode((self.window_size, self.window_size))
-            pygame.display.set_caption(f"CPP v2 — {self.size}×{self.size}")
+            pygame.display.set_caption(f"CPP v3 — {self.size}×{self.size}")
         if self.clock is None and self.render_mode == "human":
             self.clock = pygame.time.Clock()
 
@@ -298,7 +312,14 @@ class GridWorldCPPEnvV2(gym.Env):
         pygame.draw.circle(canvas, (0, 80, 220),
                            ((ax + 0.5) * pix, (ay + 0.5) * pix), pix / 3)
 
-        # Janela local (borda laranja)
+        if self.include_goal_direction:
+            dx, dy = self._compute_goal_direction()
+            if dx != 0 or dy != 0:
+                cx, cy = (ax + 0.5) * pix, (ay + 0.5) * pix
+                ex, ey = cx + dx * pix * 0.8, cy + dy * pix * 0.8
+                pygame.draw.line(canvas, (220, 20, 20), (cx, cy), (ex, ey), 3)
+
+        # Janela local 
         half = self.local_view_size // 2
         lx = (ax - half) * pix
         ly = (ay - half) * pix

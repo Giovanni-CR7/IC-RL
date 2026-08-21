@@ -1,0 +1,6 @@
+algoritmo,grid,obstaculos,max_steps,episodios,cobertura_completa_pct,cobertura_media_pct,cobertura_std_pct,passos_medios,passos_std
+rl,15x15,18,450,100,96.0,99.56,2.77,277.3,39.8
+bfs,15x15,18,450,100,100.0,100.00,0.00,255.1,8.3
+boustrophedon,15x15,18,450,100,100.0,100.00,0.00,268.2,9.2
+spanning_tree,15x15,18,450,100,100.0,100.00,0.00,268.6,13.1
+frontier,15x15,18,450,100,100.0,100.00,0.00,255.1,8.3
