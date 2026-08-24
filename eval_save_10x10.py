@@ -4,7 +4,7 @@ import argparse
 import numpy as np
 import gymnasium as gym
 from stable_baselines3 import PPO
-from train_with_goal_delta import make_env, resolve_model_path
+from train_cpp import make_env, resolve_model_path
 
 
 def evaluate(model_path: str, size: int, obstacles: int, max_steps: int,

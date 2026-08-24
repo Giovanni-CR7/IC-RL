@@ -6,7 +6,7 @@ import gymnasium as gym
 from stable_baselines3 import PPO
 from stable_baselines3.common.logger import configure
 
-from train_with_goal_delta import make_env, resolve_model_path
+from train_cpp import make_env, resolve_model_path
 
 
 def fine_tune(model_name: str, timesteps: int = 500_000,
